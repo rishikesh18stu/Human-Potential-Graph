@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Smoke-test ranker on sample data
+        run: |
+          python -c "
+          import json, sys
+          sys.path.insert(0, '.')
+          from ranker.scorer import score_candidate
+          from ranker.domains import DOMAINS
+          with open('sample_candidates.json') as f:
+              cands = json.load(f)
+          results = [score_candidate(c) for c in cands]
+          results.sort(key=lambda x: (-x['score'], x['candidate_id']))
+          assert len(results) == len(cands), 'Missing scored candidates'
+          assert all(0 <= r['score'] <= 1 for r in results), 'Scores out of range'
+          assert all(r['domain'] in DOMAINS for r in results), 'Invalid domain assigned'
+          domains_seen = {r['domain_label'] for r in results}
+          print(f'OK — scored {len(results)} candidates, top score = {results[0][\"score\"]:.4f}')
+          print(f'Domains detected: {sorted(domains_seen)}')
+          assert len(domains_seen) > 1, 'Multi-domain detection not working — only one domain matched'
+          "
+
+      - name: Validate submission format
+        run: |
+          python -c "
+          import json, csv, sys
+          sys.path.insert(0, '.')
+          from ranker.scorer import score_candidate
+          with open('sample_candidates.json') as f:
+              cands = json.load(f)
+          results = sorted([score_candidate(c) for c in cands], key=lambda x: (-x['score'], x['candidate_id']))
+          top = results[:min(50, len(results))]
+          with open('/tmp/test_sub.csv', 'w', newline='') as f:
+              w = csv.writer(f)
+              w.writerow(['candidate_id','rank','score','domain','reasoning'])
+              for i, r in enumerate(top, 1):
+                  w.writerow([r['candidate_id'], i, f'{r[\"score\"]:.4f}', r['domain_label'], r['reasoning']])
+          print('CSV write OK')
+          "
+
+      - name: Docker build (no push)
+        run: docker build -t hpg-ranker:test .
